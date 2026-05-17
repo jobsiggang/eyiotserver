@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime, timezone
 
 from google import genai
@@ -24,13 +25,17 @@ def _decide_motors(temp: float, hum: float) -> tuple[bool, bool]:
 
 def _build_fallback_result(temp: float, hum: float, reason: str) -> str:
     fan_on, pump_on = _decide_motors(temp, hum)
-    fan = "on" if fan_on else "off"
-    pump = "on" if pump_on else "off"
-    return (
-        "Gemini 호출에 실패하여 규칙 기반 제어를 사용합니다.\n"
-        f"측정값: temperature={temp}, humidity={hum}\n"
-        f"사유: {reason}\n"
-        f"{{\"fan_motor\": \"{fan}\", \"water_pump\": \"{pump}\"}}"
+    advice = "환기유지, 과습주의"
+    if len(advice) > 20:
+        advice = advice[:20]
+    return json.dumps(
+        {
+            "fan": "ON" if fan_on else "OFF",
+            "pump": "ON" if pump_on else "OFF",
+            "advice": advice,
+            "reason": reason[:80],
+        },
+        ensure_ascii=False,
     )
 
 
@@ -86,10 +91,11 @@ def sensor():
         print(f"[센서] 온도: {temp}, 습도: {hum}")
 
         prompt = (
-            f"현재 온도 {temp}도, 습도 {hum}%입니다. "
-            "잉글리쉬 라벤더 생육 환경에 적합한지 알려주세요. "
-            "습도와 온도에 따라 선풍기 모터를 켜고 물펌프모터를 켜야할지 알려주세요. "
-            "Esp32로 제어할 수 있도록 선풍기 모터와 물펌프 모터의 상태를 JSON 형태로 알려주세요."
+            "아래 규칙을 반드시 지켜 한 줄 JSON만 출력하세요. "
+            "추가 설명/코드블록/개행 금지. "
+            f"입력값: temperature={temp}, humidity={hum}. "
+            "출력 스키마: {\"fan\":\"ON|OFF\",\"pump\":\"ON|OFF\",\"advice\":\"20자 이내\"}. "
+            "advice는 한국어 20자 이내로 작성하세요."
         )
 
         result = ""

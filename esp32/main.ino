@@ -41,6 +41,11 @@ const int RELAY_OFF = HIGH;
 const unsigned long SEND_INTERVAL_MS = 5UL * 60UL * 1000UL;  // 5분
 unsigned long lastSendMs = 0;
 
+// ===== HTTP 통신 설정 =====
+const int HTTP_CONNECT_TIMEOUT_MS = 12000;
+const int HTTP_READ_TIMEOUT_MS    = 35000;
+const int HTTP_MAX_RETRY          = 2;
+
 // ===== DHT 센서 =====
 DHT dht(DHT_PIN, DHT11);
 
@@ -117,7 +122,7 @@ void setPump(bool on) {
 
 /**
  * Gemini 응답 문자열에서 첫 번째 { } JSON 블록을 찾아
- * fan_motor / pump_motor(water_pump) 값을 파싱합니다.
+ * fan / pump 값을 파싱합니다.
  * 파싱 성공 시 true 반환.
  */
 bool parseMotorJson(const String& text, bool& fanOn, bool& pumpOn) {
@@ -137,9 +142,9 @@ bool parseMotorJson(const String& text, bool& fanOn, bool& pumpOn) {
     return false;
   }
 
-  // fan_motor 키 탐색 (다양한 키명 대응)
-  const char* fanKeys[]  = {"fan_motor", "fan", "선풍기", "fan_status"};
-  const char* pumpKeys[] = {"water_pump", "pump_motor", "pump", "물펌프", "pump_status"};
+  // 키는 fan, pump 고정 포맷만 처리
+  const char* fanKeys[]  = {"fan"};
+  const char* pumpKeys[] = {"pump"};
 
   fanOn  = false;
   pumpOn = false;
@@ -245,11 +250,6 @@ void sendSensorData() {
   drawDisplay();
   digitalWrite(LED_PIN, HIGH);
 
-  HTTPClient http;
-  http.begin(SERVER_URL);
-  http.addHeader("Content-Type", "application/json");
-  http.setTimeout(15000);
-
   // 요청 본문
   StaticJsonDocument<128> reqDoc;
   reqDoc["temperature"] = temp;
@@ -262,11 +262,35 @@ void sendSensorData() {
   Serial.print("[HTTP] Body: ");
   Serial.println(reqBody);
 
-  int httpCode = http.POST(reqBody);
-  Serial.printf("[HTTP] 응답 코드: %d\n", httpCode);
+  int httpCode = -1;
+  String payload = "";
+
+  for (int attempt = 1; attempt <= HTTP_MAX_RETRY; attempt++) {
+    HTTPClient http;
+    http.begin(SERVER_URL);
+    http.addHeader("Content-Type", "application/json");
+    http.setConnectTimeout(HTTP_CONNECT_TIMEOUT_MS);
+    http.setTimeout(HTTP_READ_TIMEOUT_MS);
+
+    Serial.printf("[HTTP] 시도 %d/%d\n", attempt, HTTP_MAX_RETRY);
+    httpCode = http.POST(reqBody);
+    Serial.printf("[HTTP] 응답 코드: %d\n", httpCode);
+
+    if (httpCode > 0) {
+      payload = http.getString();
+      http.end();
+      break;
+    }
+
+    Serial.printf("[HTTP] 오류 상세: %s\n", http.errorToString(httpCode).c_str());
+    http.end();
+
+    if (attempt < HTTP_MAX_RETRY) {
+      delay(1500);
+    }
+  }
 
   if (httpCode == HTTP_CODE_OK) {
-    String payload = http.getString();
     Serial.print("[HTTP] 응답: ");
     Serial.println(payload);
 
@@ -295,11 +319,11 @@ void sendSensorData() {
     }
   } else {
     Serial.printf("[HTTP] 오류 코드: %d\n", httpCode);
+    Serial.printf("[HTTP] 오류 상세: %s\n", HTTPClient::errorToString(httpCode).c_str());
     g_statusMsg = String("HTTP ERR:") + httpCode;
     blinkLed(5, 60);
   }
 
-  http.end();
   g_sending = false;
   digitalWrite(LED_PIN, LOW);
   drawDisplay();
